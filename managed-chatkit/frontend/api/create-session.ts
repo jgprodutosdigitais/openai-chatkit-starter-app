@@ -23,7 +23,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const apiKey = readEnvString(process.env.OPENAI_API_KEY);
-
     if (!apiKey) {
       res.status(500).json({ error: "Missing OPENAI_API_KEY" });
       return;
@@ -31,7 +30,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const body = (req.body ?? {}) as CreateSessionBody;
 
-    // workflow.id: prefer body, fallback to env
     const workflowId =
       readEnvString(body.workflow?.id) ||
       readEnvString(process.env.OPENAI_WORKFLOW_ID) ||
@@ -45,16 +43,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    // workflow.version MUST be a string
     const workflowVersion =
       coerceVersionToString(body.workflow?.version) ||
       readEnvString(process.env.OPENAI_WORKFLOW_VERSION) ||
       readEnvString(process.env.VITE_CHATKIT_WORKFLOW_VERSION);
 
-    // user: prefer body; fallback (frontend should send!)
-    const user =
-      readEnvString(body.user) ||
-      `anon_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+    const user = readEnvString(body.user);
+    if (!user) {
+      res.status(400).json({
+        error:
+          "Missing required field 'user' (string). Send it in POST body: { user: '...' }",
+      });
+      return;
+    }
 
     const resp = await fetch("https://api.openai.com/v1/chatkit/sessions", {
       method: "POST",
