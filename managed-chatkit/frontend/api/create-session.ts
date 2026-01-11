@@ -1,12 +1,18 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 type CreateSessionBody = {
-  workflow?: { id?: string; version?: number };
+  workflow?: { id?: string; version?: string | number };
   user?: string;
 };
 
 function readEnvString(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+function coerceVersionToString(v: unknown): string | undefined {
+  if (typeof v === "string" && v.trim()) return v.trim();
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return undefined;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -17,13 +23,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const apiKey = readEnvString(process.env.OPENAI_API_KEY);
-    const fallbackWorkflowId =
-      readEnvString(process.env.OPENAI_WORKFLOW_ID) ||
-      readEnvString(process.env.VITE_CHATKIT_WORKFLOW_ID);
-
-    const fallbackWorkflowVersionRaw =
-      readEnvString(process.env.OPENAI_WORKFLOW_VERSION) ||
-      readEnvString(process.env.VITE_CHATKIT_WORKFLOW_VERSION);
 
     if (!apiKey) {
       res.status(500).json({ error: "Missing OPENAI_API_KEY" });
@@ -32,14 +31,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const body = (req.body ?? {}) as CreateSessionBody;
 
-    // Workflow (prefer body, fallback to env)
-    const workflowId = body.workflow?.id ?? fallbackWorkflowId;
-    const workflowVersion =
-      typeof body.workflow?.version === "number"
-        ? body.workflow.version
-        : fallbackWorkflowVersionRaw
-          ? Number(fallbackWorkflowVersionRaw)
-          : undefined;
+    // workflow.id: prefer body, fallback to env
+    const workflowId =
+      readEnvString(body.workflow?.id) ||
+      readEnvString(process.env.OPENAI_WORKFLOW_ID) ||
+      readEnvString(process.env.VITE_CHATKIT_WORKFLOW_ID);
 
     if (!workflowId) {
       res.status(400).json({
@@ -49,11 +45,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    // User (prefer body, else generate a fallback)
+    // workflow.version MUST be a string
+    const workflowVersion =
+      coerceVersionToString(body.workflow?.version) ||
+      readEnvString(process.env.OPENAI_WORKFLOW_VERSION) ||
+      readEnvString(process.env.VITE_CHATKIT_WORKFLOW_VERSION);
+
+    // user: prefer body; fallback (frontend should send!)
     const user =
-      readEnvString(body.user) ??
-      // fallback: stable-ish per device isn't possible server-side;
-      // this is a last-resort to unblock (frontend SHOULD send user).
+      readEnvString(body.user) ||
       `anon_${Math.random().toString(36).slice(2)}_${Date.now()}`;
 
     const resp = await fetch("https://api.openai.com/v1/chatkit/sessions", {
@@ -64,10 +64,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "OpenAI-Beta": "chatkit_beta=v1",
       },
       body: JSON.stringify({
-        user, // ✅ REQUIRED
+        user,
         workflow: {
-          id: workflowId, // ✅ REQUIRED
-          ...(Number.isFinite(workflowVersion) ? { version: workflowVersion } : {}),
+          id: workflowId,
+          ...(workflowVersion ? { version: workflowVersion } : {}),
         },
       }),
     });
