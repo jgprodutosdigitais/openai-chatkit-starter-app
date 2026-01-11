@@ -11,47 +11,69 @@ export const workflowId = (() => {
 
 const workflowVersion = readEnvString(import.meta.env.VITE_CHATKIT_WORKFLOW_VERSION);
 
+// ===== user id (estável por navegador) =====
 function getOrCreateUserId(): string {
   try {
     const key = "chatkit_user_id";
     const existing = localStorage.getItem(key);
     if (existing && existing.trim()) return existing;
 
-    const created = `user_${crypto.randomUUID ? crypto.randomUUID() : `${Math.random().toString(36).slice(2)}_${Date.now()}`}`;
+    const created = `user_${crypto.randomUUID()}`;
     localStorage.setItem(key, created);
     return created;
   } catch {
-    // fallback (private mode / blocked storage)
     return `user_${Math.random().toString(36).slice(2)}_${Date.now()}`;
   }
 }
 
-function getClientSecretStorageKey(user: string, workflow: string) {
-  // separa por workflow + user (e versão, se existir) pra não misturar
-  const v = workflowVersion ? `@v=${workflowVersion}` : "";
-  return `chatkit_client_secret:${workflow}:${user}${v}`;
+// ===== client_secret cache com expiração =====
+type CachedSecret = { client_secret: string; created_at: number };
+
+const SECRET_KEY = "chatkit_client_secret_v1";
+// ajuste aqui se quiser (em ms). 25 min costuma ser um bom “safe refresh”.
+const SECRET_TTL_MS = 25 * 60 * 1000;
+
+function readCachedSecret(): CachedSecret | null {
+  try {
+    const raw = localStorage.getItem(SECRET_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedSecret;
+    if (!parsed?.client_secret || !parsed?.created_at) return null;
+    // expirado
+    if (Date.now() - parsed.created_at > SECRET_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSecret(secret: string) {
+  try {
+    const payload: CachedSecret = { client_secret: secret, created_at: Date.now() };
+    localStorage.setItem(SECRET_KEY, JSON.stringify(payload));
+  } catch {
+    // se localStorage falhar, tudo bem: fica só em memória do runtime
+  }
+}
+
+function clearCachedSecret() {
+  try {
+    localStorage.removeItem(SECRET_KEY);
+  } catch {}
 }
 
 export function createClientSecretFetcher(
   workflow: string,
   endpoint = "/api/create-session"
 ) {
-  return async (currentSecret: string | null) => {
-    // 1) se já tem na memória, usa
-    if (currentSecret) return currentSecret;
+  return async (_currentSecret: string | null) => {
+    // 1) tenta usar cache válido (com TTL)
+    const cached = readCachedSecret();
+    if (cached?.client_secret) return cached.client_secret;
 
+    // 2) senão, cria/renova
     const user = getOrCreateUserId();
 
-    // 2) tenta cache localStorage
-    try {
-      const storageKey = getClientSecretStorageKey(user, workflow);
-      const cached = localStorage.getItem(storageKey);
-      if (cached && cached.trim()) return cached;
-    } catch {
-      // ignora (storage bloqueado)
-    }
-
-    // 3) cria nova session no backend
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -70,21 +92,17 @@ export function createClientSecretFetcher(
     };
 
     if (!response.ok) {
+      // se der ruim, garante que não ficou lixo cacheado
+      clearCachedSecret();
       throw new Error(payload.error ?? "Failed to create session");
     }
 
     if (!payload.client_secret) {
+      clearCachedSecret();
       throw new Error("Missing client secret in response");
     }
 
-    // 4) salva cache
-    try {
-      const storageKey = getClientSecretStorageKey(user, workflow);
-      localStorage.setItem(storageKey, payload.client_secret);
-    } catch {
-      // ignora
-    }
-
+    writeCachedSecret(payload.client_secret);
     return payload.client_secret;
   };
 }
