@@ -9,13 +9,15 @@ export const workflowId = (() => {
   return id;
 })();
 
+const workflowVersion = readEnvString(import.meta.env.VITE_CHATKIT_WORKFLOW_VERSION);
+
 function getOrCreateUserId(): string {
   try {
     const key = "chatkit_user_id";
     const existing = localStorage.getItem(key);
     if (existing && existing.trim()) return existing;
 
-    const created = `user_${crypto.randomUUID()}`;
+    const created = `user_${crypto.randomUUID ? crypto.randomUUID() : `${Math.random().toString(36).slice(2)}_${Date.now()}`}`;
     localStorage.setItem(key, created);
     return created;
   } catch {
@@ -24,21 +26,41 @@ function getOrCreateUserId(): string {
   }
 }
 
+function getClientSecretStorageKey(user: string, workflow: string) {
+  // separa por workflow + user (e versão, se existir) pra não misturar
+  const v = workflowVersion ? `@v=${workflowVersion}` : "";
+  return `chatkit_client_secret:${workflow}:${user}${v}`;
+}
+
 export function createClientSecretFetcher(
   workflow: string,
   endpoint = "/api/create-session"
 ) {
   return async (currentSecret: string | null) => {
+    // 1) se já tem na memória, usa
     if (currentSecret) return currentSecret;
 
     const user = getOrCreateUserId();
 
+    // 2) tenta cache localStorage
+    try {
+      const storageKey = getClientSecretStorageKey(user, workflow);
+      const cached = localStorage.getItem(storageKey);
+      if (cached && cached.trim()) return cached;
+    } catch {
+      // ignora (storage bloqueado)
+    }
+
+    // 3) cria nova session no backend
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         user,
-        workflow: { id: workflow },
+        workflow: {
+          id: workflow,
+          ...(workflowVersion ? { version: workflowVersion } : {}),
+        },
       }),
     });
 
@@ -53,6 +75,14 @@ export function createClientSecretFetcher(
 
     if (!payload.client_secret) {
       throw new Error("Missing client secret in response");
+    }
+
+    // 4) salva cache
+    try {
+      const storageKey = getClientSecretStorageKey(user, workflow);
+      localStorage.setItem(storageKey, payload.client_secret);
+    } catch {
+      // ignora
     }
 
     return payload.client_secret;
