@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 type CreateSessionBody = {
   workflow?: { id?: string; version?: string | number };
-  user?: { id?: string; name?: string } | string;
+  user?: string;
 };
 
 function readEnvString(v: unknown): string | undefined {
@@ -38,7 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!workflowId) {
       res.status(400).json({
         error:
-          "Missing required field 'workflow.id'. Send it in POST body: { workflow: { id: 'wf_...' } }",
+          "Missing required field 'workflow.id'. Provide OPENAI_WORKFLOW_ID in Vercel env vars or send in body.",
       });
       return;
     }
@@ -48,19 +48,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       readEnvString(process.env.OPENAI_WORKFLOW_VERSION) ||
       readEnvString(process.env.VITE_CHATKIT_WORKFLOW_VERSION);
 
-    // Accept empty body: generate a stable-ish user id from request headers
+    // ChatKit sessions endpoint expects `user` as STRING.
+    // Accept empty body and generate a stable-ish user id from request headers.
     const inferredId =
       readEnvString(req.headers["x-forwarded-for"]) ||
       readEnvString(req.headers["x-real-ip"]) ||
       "anonymous";
 
-    const userObj =
-      typeof body.user === "string"
-        ? { id: body.user, name: body.user }
-        : {
-            id: readEnvString(body.user?.id) || `web_${inferredId}`,
-            name: readEnvString(body.user?.name) || "Web User",
-          };
+    const user =
+      readEnvString(body.user) ||
+      `web_${inferredId}`.replace(/[^a-zA-Z0-9._-]/g, "_");
 
     const resp = await fetch("https://api.openai.com/v1/chatkit/sessions", {
       method: "POST",
@@ -70,7 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "OpenAI-Beta": "chatkit_beta=v1",
       },
       body: JSON.stringify({
-        user: userObj,
+        user,
         workflow: {
           id: workflowId,
           ...(workflowVersion ? { version: workflowVersion } : {}),
@@ -89,9 +86,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (data as any)?.client_secret ?? (data as any)?.clientSecret;
 
     if (!client_secret) {
-      res
-        .status(500)
-        .json({ error: "Missing client_secret in response", data });
+      res.status(500).json({ error: "Missing client_secret in response", data });
       return;
     }
 
