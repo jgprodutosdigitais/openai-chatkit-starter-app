@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 type CreateSessionBody = {
   workflow?: { id?: string; version?: string | number };
-  user?: string;
+  user?: { id?: string; name?: string } | string;
 };
 
 function readEnvString(v: unknown): string | undefined {
@@ -48,14 +48,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       readEnvString(process.env.OPENAI_WORKFLOW_VERSION) ||
       readEnvString(process.env.VITE_CHATKIT_WORKFLOW_VERSION);
 
-    const user = readEnvString(body.user);
-    if (!user) {
-      res.status(400).json({
-        error:
-          "Missing required field 'user' (string). Send it in POST body: { user: '...' }",
-      });
-      return;
-    }
+    // Accept empty body: generate a stable-ish user id from request headers
+    const inferredId =
+      readEnvString(req.headers["x-forwarded-for"]) ||
+      readEnvString(req.headers["x-real-ip"]) ||
+      "anonymous";
+
+    const userObj =
+      typeof body.user === "string"
+        ? { id: body.user, name: body.user }
+        : {
+            id: readEnvString(body.user?.id) || `web_${inferredId}`,
+            name: readEnvString(body.user?.name) || "Web User",
+          };
 
     const resp = await fetch("https://api.openai.com/v1/chatkit/sessions", {
       method: "POST",
@@ -65,7 +70,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "OpenAI-Beta": "chatkit_beta=v1",
       },
       body: JSON.stringify({
-        user,
+        user: userObj,
         workflow: {
           id: workflowId,
           ...(workflowVersion ? { version: workflowVersion } : {}),
@@ -73,8 +78,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }),
     });
 
-    const text = await resp.text();
-    res.status(resp.status).send(text);
+    const data = await resp.json().catch(async () => ({ raw: await resp.text() }));
+
+    if (!resp.ok) {
+      res.status(resp.status).json(data);
+      return;
+    }
+
+    const client_secret =
+      (data as any)?.client_secret ?? (data as any)?.clientSecret;
+
+    if (!client_secret) {
+      res
+        .status(500)
+        .json({ error: "Missing client_secret in response", data });
+      return;
+    }
+
+    res.status(200).json({ client_secret });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || "Unknown error" });
   }
