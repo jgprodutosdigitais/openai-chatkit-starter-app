@@ -25,12 +25,31 @@ export function ChatKitPanel() {
   }, [resetCounter]);
 
   const chatkit = useChatKit({
-    api: { url: apiUrl, domainKey: CHATKIT_API_DOMAIN_KEY },
-    composer: {
-      // File uploads are disabled for the demo backend.
-      attachments: { enabled: false },
+  api: {
+    async getClientSecret(existingClientSecret) {
+      // Se já existir um, reutiliza (evita criar sessão nova o tempo todo)
+      if (existingClientSecret) return existingClientSecret;
+
+      const res = await fetch("/api/create-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`create-session failed: ${res.status} ${text}`);
+      }
+
+      const data = await res.json();
+
+      // Aceita os 2 formatos mais comuns de retorno
+      return data.client_secret ?? data.clientSecret;
     },
-  });
+  },
+  composer: {
+    attachments: { enabled: false },
+  },
+});
 
   // 1) When coming back to the tab/iframe, re-init (prevents "white screen after a while").
   useEffect(() => {
